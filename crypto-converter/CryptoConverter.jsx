@@ -15,10 +15,15 @@ const CryptoConverter = () => {
       try {
         setLoading(true);
         setError('');
-        const response = await axios.get('https://api.coingecko.com/api/v3/coins/list');
-        setCryptos(response.data);
+        const response = await axios.get('/api/coins');
+        if (response.data.success) {
+          setCryptos(response.data.data);
+        } else {
+          setError('Failed to load coins.');
+        }
       } catch (err) {
         setError('Failed to load coins. Please try again.');
+        console.error(err);
       } finally {
         setLoading(false);
       }
@@ -31,24 +36,26 @@ const CryptoConverter = () => {
     try {
       setLoading(true);
       setError('');
-      const fromPrice = await getPrice(fromCurrency);
-      const toPrice = await getPrice(toCurrency);
 
-      if (fromPrice && toPrice) {
-        setConvertedAmount((amount * fromPrice) / toPrice);
+      const response = await axios.get('/api/convert', {
+        params: {
+          from: fromCurrency,
+          to: toCurrency,
+          amount: amount
+        }
+      });
+
+      if (response.data.success) {
+        setConvertedAmount(response.data.result);
+      } else {
+        setError(response.data.error || 'Conversion failed');
       }
     } catch (err) {
       setError('Failed to convert. Please try again.');
+      console.error(err);
     } finally {
       setLoading(false);
     }
-  };
-
-  const getPrice = async (currency) => {
-    const response = await axios.get(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${currency}&vs_currencies=usd`
-    );
-    return response.data[currency].usd;
   };
 
   return (
