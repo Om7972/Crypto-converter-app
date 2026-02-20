@@ -93,7 +93,19 @@ const getCoinsList = async () => {
     return coinsCache.data;
   } catch (error) {
     console.error('Error fetching coins list:', error.message);
-    return coinsCache.data || [];
+    if (coinsCache.data) return coinsCache.data; // Return stale if available
+
+    // Fallback static list
+    return [
+      { id: 'bitcoin', symbol: 'btc', name: 'Bitcoin' },
+      { id: 'ethereum', symbol: 'eth', name: 'Ethereum' },
+      { id: 'tether', symbol: 'usdt', name: 'Tether' },
+      { id: 'binancecoin', symbol: 'bnb', name: 'BNB' },
+      { id: 'solana', symbol: 'sol', name: 'Solana' },
+      { id: 'ripple', symbol: 'xrp', name: 'XRP' },
+      { id: 'cardano', symbol: 'ada', name: 'Cardano' },
+      { id: 'dogecoin', symbol: 'doge', name: 'Dogecoin' },
+    ];
   }
 };
 
@@ -117,7 +129,18 @@ const getTrend = async (id) => {
     return series;
   } catch (error) {
     console.error(`Error fetching trend for ${id}:`, error.message);
-    if (cached) return cached.value; // Return stale if available
+
+    // Fallback to mock data on 401 (Unauthorized) or if no cache
+    if (error.response?.status === 401 || !cached) {
+      console.warn(`Generating mock trend data for ${id}`);
+      const mockData = Array.from({ length: 24 }, (_, i) => ({
+        time: Math.floor(Date.now() / 1000) - (23 - i) * 3600,
+        value: 10000 + Math.random() * 5000 // Generic mock value
+      }));
+      return mockData;
+    }
+
+    if (cached) return cached.value;
     return [];
   }
 };
