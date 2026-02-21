@@ -1,9 +1,11 @@
 const axios = require('axios');
 
-const API_BASE_URL = process.env.API_BASE_URL || 'https://api.coingecko.com/api/v3';
-const PRICE_TTL_MS = 5 * 60 * 1000; // Increased to 5 minutes for better rate limit management
+const API_KEY = process.env.free_cryptocurrency_api_key;
+const API_BASE_URL = 'https://api.freecryptoapi.com/v1';
+
+const PRICE_TTL_MS = 5 * 60 * 1000;
 const COINS_TTL_MS = 12 * 60 * 60 * 1000;
-const TREND_TTL_MS = 10 * 60 * 1000; // Increased to 10 minutes
+const TREND_TTL_MS = 10 * 60 * 1000;
 
 const priceCache = new Map();
 const coinsCache = { data: null, expiresAt: 0 };
@@ -11,8 +13,11 @@ const trendCache = new Map();
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 8000,
-  headers: { Accept: 'application/json' },
+  timeout: 10000,
+  headers: {
+    'Authorization': `Bearer ${API_KEY}`,
+    'Accept': 'application/json'
+  },
 });
 
 const now = () => Date.now();
@@ -21,7 +26,7 @@ const getCachedPrice = (id) => {
   const entry = priceCache.get(id);
   if (!entry) return null;
   if (entry.expiresAt < now()) {
-    return null; // Expired, but we keep it in Map for stale fallback
+    return null;
   }
   return entry.value;
 };
@@ -36,45 +41,49 @@ const getUsdPrices = async (ids) => {
 
   ids.forEach((id) => {
     const cached = getCachedPrice(id);
+    const cachedUpper = getCachedPrice(id.toUpperCase());
+
     if (cached !== null) {
       results[id] = cached;
+    } else if (cachedUpper !== null) {
+      results[id] = cachedUpper;
     } else {
-      missing.push(id);
+      missing.push(id.toUpperCase());
     }
   });
 
   if (missing.length > 0) {
     try {
-      const response = await api.get('/simple/price', {
-        params: {
-          ids: missing.join(','),
-          vs_currencies: 'usd',
-        },
+      const response = await api.get('/getData', {
+        params: { symbol: missing.join(',') },
       });
 
-      missing.forEach((id) => {
-        const value = response.data?.[id]?.usd;
-        if (typeof value === 'number') {
-          results[id] = value;
-          setCachedPrice(id, value);
+      const data = response.data.data || response.data || [];
+      const dataArray = Array.isArray(data) ? data : [data];
+
+      dataArray.forEach((coin) => {
+        const symbol = coin.symbol ? coin.symbol.toLowerCase() : null;
+        const price = coin.price_usd || coin.price || coin.close;
+
+        if (symbol && typeof price === 'number') {
+          // Store both lowercase and uppercase variations
+          setCachedPrice(symbol, price);
+          setCachedPrice(symbol.toUpperCase(), price);
+
+          // Map back to requested ID if it matches
+          if (missing.includes(symbol.toUpperCase())) {
+            results[symbol] = price;
+            // Also add the original requested ID if different
+            ids.forEach(reqId => {
+              if (reqId.toLowerCase() === symbol) {
+                results[reqId] = price;
+              }
+            });
+          }
         }
       });
     } catch (error) {
-      if (error.response && error.response.status === 429) {
-        console.warn('CoinGecko API rate limit hit. Falling back to stale cache.');
-        missing.forEach((id) => {
-          const entry = priceCache.get(id);
-          if (entry) {
-            results[id] = entry.value;
-            // Optionally extend expiry slightly to avoid immediate retry storm
-            entry.expiresAt = now() + 60 * 1000;
-            priceCache.set(id, entry);
-          }
-        });
-      } else {
-        console.error('Error fetching prices from CoinGecko:', error.message);
-        // Don't throw, let it return partial results so app doesn't crash
-      }
+      console.warn('FreeCryptoAPI price fetch warning:', error.message);
     }
   }
 
@@ -87,24 +96,44 @@ const getCoinsList = async () => {
   }
 
   try {
-    const response = await api.get('/coins/list');
-    coinsCache.data = response.data || [];
+    const response = await api.get('/getCryptoList');
+    let rawList = response.data.data || response.data || [];
+
+    // Ensure rawList is an array
+    if (!Array.isArray(rawList)) {
+      if (rawList.list && Array.isArray(rawList.list)) rawList = rawList.list;
+      else if (rawList.coins && Array.isArray(rawList.coins)) rawList = rawList.coins;
+      else {
+        console.warn('Unexpected API response format for /getCryptoList:', JSON.stringify(rawList));
+        rawList = [];
+      }
+    }
+
+    // Map to our standard format: { id, symbol, name }
+    // We use lowercase symbol as 'id' to be consistent with getUsdPrices
+    const list = rawList.map((coin) => ({
+      id: (coin.symbol || coin.code || '').toLowerCase(),
+      symbol: (coin.symbol || coin.code || '').toLowerCase(),
+      name: coin.name || 'Unknown',
+    })).filter(c => c.id);
+
+    coinsCache.data = list;
     coinsCache.expiresAt = now() + COINS_TTL_MS;
-    return coinsCache.data;
+    return list;
   } catch (error) {
     console.error('Error fetching coins list:', error.message);
-    if (coinsCache.data) return coinsCache.data; // Return stale if available
+    if (coinsCache.data) return coinsCache.data;
 
     // Fallback static list
     return [
-      { id: 'bitcoin', symbol: 'btc', name: 'Bitcoin' },
-      { id: 'ethereum', symbol: 'eth', name: 'Ethereum' },
-      { id: 'tether', symbol: 'usdt', name: 'Tether' },
-      { id: 'binancecoin', symbol: 'bnb', name: 'BNB' },
-      { id: 'solana', symbol: 'sol', name: 'Solana' },
-      { id: 'ripple', symbol: 'xrp', name: 'XRP' },
-      { id: 'cardano', symbol: 'ada', name: 'Cardano' },
-      { id: 'dogecoin', symbol: 'doge', name: 'Dogecoin' },
+      { id: 'btc', symbol: 'btc', name: 'Bitcoin' },
+      { id: 'eth', symbol: 'eth', name: 'Ethereum' },
+      { id: 'usdt', symbol: 'usdt', name: 'Tether' },
+      { id: 'bnb', symbol: 'bnb', name: 'BNB' },
+      { id: 'sol', symbol: 'sol', name: 'Solana' },
+      { id: 'xrp', symbol: 'xrp', name: 'XRP' },
+      { id: 'ada', symbol: 'ada', name: 'Cardano' },
+      { id: 'doge', symbol: 'doge', name: 'Dogecoin' },
     ];
   }
 };
@@ -116,32 +145,34 @@ const getTrend = async (id) => {
   }
 
   try {
-    const response = await api.get(`/coins/${id}/market_chart`, {
-      params: { vs_currency: 'usd', days: 1, interval: 'hourly' },
+    // API likely expects uppercase symbol
+    const symbol = id.toUpperCase();
+    const response = await api.get('/getHistory', {
+      params: { symbol: symbol, interval: '1h', limit: 24 },
     });
 
-    const series = (response.data?.prices || []).map((point) => ({
-      time: Math.floor(point[0] / 1000),
-      value: point[1],
-    }));
+    const data = response.data.data || response.data || [];
+
+    // Map response to { time, value }
+    const series = data.map((point) => ({
+      time: Math.floor((new Date(point.time || point.date).getTime()) / 1000), // Ensure unix timestamp
+      value: point.close || point.price,
+    })).sort((a, b) => a.time - b.time); // Ensure sorted by time
 
     trendCache.set(id, { value: series, expiresAt: now() + TREND_TTL_MS });
     return series;
   } catch (error) {
     console.error(`Error fetching trend for ${id}:`, error.message);
 
-    // Fallback to mock data on 401 (Unauthorized) or if no cache
-    if (error.response?.status === 401 || !cached) {
-      console.warn(`Generating mock trend data for ${id}`);
-      const mockData = Array.from({ length: 24 }, (_, i) => ({
-        time: Math.floor(Date.now() / 1000) - (23 - i) * 3600,
-        value: 10000 + Math.random() * 5000 // Generic mock value
-      }));
-      return mockData;
-    }
-
+    // Mock data fallback
     if (cached) return cached.value;
-    return [];
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const mockData = Array.from({ length: 24 }, (_, i) => ({
+      time: nowSec - (23 - i) * 3600,
+      value: 1000 + Math.random() * 500
+    }));
+    return mockData;
   }
 };
 
